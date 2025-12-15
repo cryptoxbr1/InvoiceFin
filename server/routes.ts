@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { storage } from "./storage";
-import { requireWallet, createNonce, createSignMessage } from "./walletAuth";
+import { requireWallet, createNonce, createSignMessage, verifySignature, verifyNonce, createSessionToken } from "./walletAuth";
 import { analyzeInvoiceImage, analyzeInvoiceText, detectFraud, assessRisk } from "./gemini";
 import { 
   getNetworkStatus, 
@@ -43,17 +43,32 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
 
   app.post("/api/auth/verify", async (req, res) => {
     try {
-      const { walletAddress } = req.body;
+      const { walletAddress, signature, nonce } = req.body;
       
       if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
         return res.status(400).json({ message: "Valid wallet address required" });
       }
       
-      // Get or create user
+      if (!signature || !nonce) {
+        return res.status(400).json({ message: "Signature and nonce required" });
+      }
+      
+      if (!verifyNonce(walletAddress, nonce)) {
+        return res.status(400).json({ message: "Invalid or expired nonce" });
+      }
+      
+      const message = createSignMessage(walletAddress, nonce);
+      if (!verifySignature(message, signature, walletAddress)) {
+        return res.status(401).json({ message: "Invalid signature" });
+      }
+      
+      const token = createSessionToken(walletAddress);
+      
       const user = await storage.getOrCreateUser(walletAddress);
       
       res.json({ 
         authenticated: true,
+        token,
         user 
       });
     } catch (error) {

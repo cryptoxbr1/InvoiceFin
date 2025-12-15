@@ -21,7 +21,7 @@ declare global {
 const POLYGON_CHAIN_ID = "0x89"; // 137 in hex
 
 export function WalletConnect() {
-  const { walletAddress, setWalletAddress, disconnect } = useAuth();
+  const { walletAddress, setAuth, disconnect } = useAuth();
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPolygon, setIsPolygon] = useState(false);
   const { toast } = useToast();
@@ -63,8 +63,6 @@ export function WalletConnect() {
   const handleAccountsChanged = (accounts: string[]) => {
     if (accounts.length === 0) {
       disconnect();
-    } else {
-      setWalletAddress(accounts[0].toLowerCase());
     }
   };
 
@@ -91,28 +89,51 @@ export function WalletConnect() {
       if (accounts.length > 0) {
         const address = accounts[0].toLowerCase();
         
+        const nonceResponse = await fetch(`/api/auth/nonce?address=${address}`);
+        if (!nonceResponse.ok) {
+          throw new Error("Failed to get nonce");
+        }
+        const { nonce, message } = await nonceResponse.json();
+        
+        const signature = await window.ethereum.request({
+          method: "personal_sign",
+          params: [message, address],
+        });
+        
         const response = await fetch("/api/auth/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ walletAddress: address }),
+          body: JSON.stringify({ walletAddress: address, signature, nonce }),
         });
 
         if (response.ok) {
-          setWalletAddress(address);
+          const { token } = await response.json();
+          setAuth(address, token);
           await checkNetwork();
           
           toast({
             title: "Wallet Connected",
             description: `Connected to ${address.slice(0, 6)}...${address.slice(-4)}`,
           });
+        } else {
+          const error = await response.json();
+          throw new Error(error.message || "Verification failed");
         }
       }
     } catch (error: any) {
-      toast({
-        title: "Connection Failed",
-        description: error.message || "Failed to connect wallet",
-        variant: "destructive",
-      });
+      if (error.code === 4001) {
+        toast({
+          title: "Signature Rejected",
+          description: "You need to sign the message to verify your wallet",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Connection Failed",
+          description: error.message || "Failed to connect wallet",
+          variant: "destructive",
+        });
+      }
     } finally {
       setIsConnecting(false);
     }

@@ -1,5 +1,5 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
-import { getStoredWalletAddress } from "./walletStorage";
+import { getStoredAuthToken } from "./walletStorage";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
@@ -8,10 +8,10 @@ async function throwIfResNotOk(res: Response) {
   }
 }
 
-function getWalletHeaders(): Record<string, string> {
-  const walletAddress = getStoredWalletAddress();
-  if (walletAddress) {
-    return { "x-wallet-address": walletAddress };
+function getAuthHeaders(): Record<string, string> {
+  const token = getStoredAuthToken();
+  if (token) {
+    return { "Authorization": `Bearer ${token}` };
   }
   return {};
 }
@@ -22,7 +22,7 @@ export async function apiRequest(
   data?: unknown | undefined,
 ): Promise<Response> {
   const headers: Record<string, string> = {
-    ...getWalletHeaders(),
+    ...getAuthHeaders(),
   };
   
   if (data) {
@@ -45,7 +45,7 @@ export async function apiRequestWithFormData(
 ): Promise<Response> {
   const res = await fetch(url, {
     method: "POST",
-    headers: getWalletHeaders(),
+    headers: getAuthHeaders(),
     body: formData,
   });
 
@@ -60,7 +60,7 @@ export const getQueryFn: <T>(options: {
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
     const res = await fetch(queryKey[0] as string, {
-      headers: getWalletHeaders(),
+      headers: getAuthHeaders(),
     });
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
