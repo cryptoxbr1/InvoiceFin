@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { type Server } from "http";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated } from "./replitAuth";
+import { requireWallet, createNonce, createSignMessage } from "./walletAuth";
 import { analyzeInvoiceImage, analyzeInvoiceText, detectFraud, assessRisk } from "./gemini";
 import { 
   getNetworkStatus, 
@@ -22,39 +22,68 @@ const upload = multer({
 });
 
 export async function registerRoutes(server: Server, app: Express): Promise<void> {
-  // Auth middleware
-  await setupAuth(app);
-
-  // Auth routes
-  app.get("/api/auth/user", isAuthenticated, async (req: any, res) => {
+  // Auth routes - wallet based
+  app.get("/api/auth/nonce", async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const user = await storage.getUser(userId);
-      res.json(user);
+      const walletAddress = req.query.address as string;
+      
+      if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+        return res.status(400).json({ message: "Valid wallet address required" });
+      }
+      
+      const nonce = createNonce(walletAddress);
+      const message = createSignMessage(walletAddress, nonce);
+      
+      res.json({ nonce, message });
+    } catch (error) {
+      console.error("Error generating nonce:", error);
+      res.status(500).json({ message: "Failed to generate nonce" });
+    }
+  });
+
+  app.post("/api/auth/verify", async (req, res) => {
+    try {
+      const { walletAddress } = req.body;
+      
+      if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+        return res.status(400).json({ message: "Valid wallet address required" });
+      }
+      
+      // Get or create user
+      const user = await storage.getOrCreateUser(walletAddress);
+      
+      res.json({ 
+        authenticated: true,
+        user 
+      });
+    } catch (error) {
+      console.error("Error verifying wallet:", error);
+      res.status(500).json({ message: "Failed to verify wallet" });
+    }
+  });
+
+  app.get("/api/auth/user", requireWallet, async (req, res) => {
+    try {
+      const walletAddress = req.walletAddress!;
+      const user = await storage.getOrCreateUser(walletAddress);
+      const business = await storage.getBusinessByWallet(walletAddress);
+      
+      res.json({
+        ...user,
+        hasBusiness: !!business,
+        business: business || null,
+      });
     } catch (error) {
       console.error("Error fetching user:", error);
       res.status(500).json({ message: "Failed to fetch user" });
     }
   });
 
-  // Update wallet address
-  app.post("/api/auth/wallet", isAuthenticated, async (req: any, res) => {
-    try {
-      const userId = req.user.claims.sub;
-      const { walletAddress } = req.body;
-      const user = await storage.updateUserWallet(userId, walletAddress);
-      res.json(user);
-    } catch (error) {
-      console.error("Error updating wallet:", error);
-      res.status(500).json({ message: "Failed to update wallet" });
-    }
-  });
-
   // Business routes
-  app.get("/api/business", isAuthenticated, async (req: any, res) => {
+  app.get("/api/business", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       res.json(business || null);
     } catch (error) {
       console.error("Error fetching business:", error);
@@ -62,10 +91,10 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.post("/api/business", isAuthenticated, async (req: any, res) => {
+  app.post("/api/business", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const existingBusiness = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const existingBusiness = await storage.getBusinessByWallet(walletAddress);
       
       if (existingBusiness) {
         return res.status(400).json({ message: "Business already exists" });
@@ -73,7 +102,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
 
       const validatedData = insertBusinessSchema.parse({
         ...req.body,
-        userId,
+        walletAddress,
       });
 
       const business = await storage.createBusiness(validatedData);
@@ -84,11 +113,19 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.patch("/api/business/:id", isAuthenticated, async (req: any, res) => {
+  app.patch("/api/business/:id", requireWallet, async (req, res) => {
     try {
       const { id } = req.params;
-      const business = await storage.updateBusiness(id, req.body);
-      res.json(business);
+      const walletAddress = req.walletAddress!;
+      
+      // Verify ownership
+      const business = await storage.getBusiness(id);
+      if (!business || business.walletAddress.toLowerCase() !== walletAddress) {
+        return res.status(403).json({ message: "Not authorized" });
+      }
+      
+      const updatedBusiness = await storage.updateBusiness(id, req.body);
+      res.json(updatedBusiness);
     } catch (error) {
       console.error("Error updating business:", error);
       res.status(500).json({ message: "Failed to update business" });
@@ -96,10 +133,10 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Invoice routes
-  app.get("/api/invoices", isAuthenticated, async (req: any, res) => {
+  app.get("/api/invoices", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       
       if (!business) {
         return res.json([]);
@@ -113,7 +150,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.get("/api/invoices/:id", isAuthenticated, async (req: any, res) => {
+  app.get("/api/invoices/:id", requireWallet, async (req, res) => {
     try {
       const { id } = req.params;
       const invoice = await storage.getInvoice(id);
@@ -124,10 +161,10 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.post("/api/invoices", isAuthenticated, async (req: any, res) => {
+  app.post("/api/invoices", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       
       if (!business) {
         return res.status(400).json({ message: "Business not registered" });
@@ -147,7 +184,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Invoice AI analysis
-  app.post("/api/invoices/analyze", isAuthenticated, upload.single("file"), async (req: any, res) => {
+  app.post("/api/invoices/analyze", requireWallet, upload.single("file"), async (req: any, res) => {
     try {
       if (!req.file) {
         return res.status(400).json({ message: "No file uploaded" });
@@ -164,7 +201,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.post("/api/invoices/analyze-text", isAuthenticated, async (req: any, res) => {
+  app.post("/api/invoices/analyze-text", requireWallet, async (req, res) => {
     try {
       const { text } = req.body;
       const analysis = await analyzeInvoiceText(text);
@@ -176,15 +213,20 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Fraud detection and risk assessment
-  app.post("/api/invoices/:id/verify", isAuthenticated, async (req: any, res) => {
+  app.post("/api/invoices/:id/verify", requireWallet, async (req, res) => {
     try {
       const { id } = req.params;
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       const invoice = await storage.getInvoice(id);
 
       if (!invoice || !business) {
         return res.status(404).json({ message: "Invoice or business not found" });
+      }
+
+      // Verify ownership
+      if (invoice.businessId !== business.id) {
+        return res.status(403).json({ message: "Not authorized" });
       }
 
       // Run fraud detection
@@ -221,16 +263,21 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Finance an invoice
-  app.post("/api/invoices/:id/finance", isAuthenticated, async (req: any, res) => {
+  app.post("/api/invoices/:id/finance", requireWallet, async (req, res) => {
     try {
       const { id } = req.params;
       const { txHash } = req.body;
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       const invoice = await storage.getInvoice(id);
 
       if (!invoice || !business) {
         return res.status(404).json({ message: "Invoice or business not found" });
+      }
+
+      // Verify ownership
+      if (invoice.businessId !== business.id) {
+        return res.status(403).json({ message: "Not authorized" });
       }
 
       if (invoice.status !== "verified") {
@@ -245,6 +292,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
       const transaction = await storage.createTransaction({
         invoiceId: id,
         businessId: business.id,
+        walletAddress,
         type: "finance",
         amount: financing.amount.toString(),
         currency: "MATIC",
@@ -279,12 +327,12 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Mark invoice as repaid
-  app.post("/api/invoices/:id/repay", isAuthenticated, async (req: any, res) => {
+  app.post("/api/invoices/:id/repay", requireWallet, async (req, res) => {
     try {
       const { id } = req.params;
       const { txHash } = req.body;
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       const invoice = await storage.getInvoice(id);
 
       if (!invoice || !business) {
@@ -295,6 +343,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
       const transaction = await storage.createTransaction({
         invoiceId: id,
         businessId: business.id,
+        walletAddress,
         type: "repay",
         amount: invoice.amount,
         currency: invoice.currency || "USD",
@@ -320,10 +369,10 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Transaction routes
-  app.get("/api/transactions", isAuthenticated, async (req: any, res) => {
+  app.get("/api/transactions", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       
       if (!business) {
         return res.json([]);
@@ -337,7 +386,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.get("/api/transactions/:txHash/status", isAuthenticated, async (req: any, res) => {
+  app.get("/api/transactions/:txHash/status", requireWallet, async (req, res) => {
     try {
       const { txHash } = req.params;
       const status = await getTransactionStatus(txHash);
@@ -349,10 +398,10 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Liquidity Pool routes
-  app.get("/api/liquidity", isAuthenticated, async (req: any, res) => {
+  app.get("/api/liquidity", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const deposits = await storage.getLiquidityByUser(userId);
+      const walletAddress = req.walletAddress!;
+      const deposits = await storage.getLiquidityByWallet(walletAddress);
       const totalPool = await storage.getTotalPoolSize();
       const apy = calculateAPY(totalPool, totalPool * 0.7, 30);
       
@@ -367,16 +416,16 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.post("/api/liquidity/deposit", isAuthenticated, async (req: any, res) => {
+  app.post("/api/liquidity/deposit", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
+      const walletAddress = req.walletAddress!;
       const { amount, txHash } = req.body;
 
       const totalPool = await storage.getTotalPoolSize();
       const apy = calculateAPY(totalPool + parseFloat(amount), (totalPool + parseFloat(amount)) * 0.7, 30);
 
       const deposit = await storage.createLiquidityDeposit({
-        userId,
+        walletAddress,
         amount,
         currency: "MATIC",
         depositTxHash: txHash,
@@ -391,7 +440,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  app.post("/api/liquidity/:id/withdraw", isAuthenticated, async (req: any, res) => {
+  app.post("/api/liquidity/:id/withdraw", requireWallet, async (req, res) => {
     try {
       const { id } = req.params;
       const deposit = await storage.withdrawLiquidity(id);
@@ -402,7 +451,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     }
   });
 
-  // Polygon network routes
+  // Polygon network routes (public)
   app.get("/api/polygon/status", async (req, res) => {
     try {
       const status = await getNetworkStatus();
@@ -444,10 +493,10 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Dashboard stats
-  app.get("/api/dashboard/stats", isAuthenticated, async (req: any, res) => {
+  app.get("/api/dashboard/stats", requireWallet, async (req, res) => {
     try {
-      const userId = req.user.claims.sub;
-      const business = await storage.getBusinessByUserId(userId);
+      const walletAddress = req.walletAddress!;
+      const business = await storage.getBusinessByWallet(walletAddress);
       
       if (!business) {
         return res.json({
@@ -468,7 +517,7 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
   });
 
   // Financing calculation
-  app.post("/api/calculate-financing", isAuthenticated, async (req: any, res) => {
+  app.post("/api/calculate-financing", requireWallet, async (req, res) => {
     try {
       const { amount, riskScore } = req.body;
       const financing = calculateFinancingAmount(amount, riskScore || 50);
@@ -476,6 +525,23 @@ export async function registerRoutes(server: Server, app: Express): Promise<void
     } catch (error) {
       console.error("Error calculating financing:", error);
       res.status(500).json({ message: "Failed to calculate financing" });
+    }
+  });
+
+  // Pool stats (public)
+  app.get("/api/pool/stats", async (req, res) => {
+    try {
+      const totalPool = await storage.getTotalPoolSize();
+      const apy = calculateAPY(totalPool, totalPool * 0.7, 30);
+      
+      res.json({
+        totalPool,
+        apy,
+        utilizationRate: 0.7,
+      });
+    } catch (error) {
+      console.error("Error fetching pool stats:", error);
+      res.status(500).json({ message: "Failed to fetch pool stats" });
     }
   });
 }

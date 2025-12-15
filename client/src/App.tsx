@@ -10,7 +10,6 @@ import { NetworkStatus } from "@/components/network-status";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { useAuth } from "@/hooks/useAuth";
-import { Skeleton } from "@/components/ui/skeleton";
 
 import Landing from "@/pages/landing";
 import Dashboard from "@/pages/dashboard";
@@ -65,39 +64,10 @@ function AuthenticatedLayout() {
   );
 }
 
-function LoadingScreen() {
-  return (
-    <div className="flex h-screen items-center justify-center">
-      <div className="flex flex-col items-center gap-4">
-        <div className="flex h-16 w-16 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <svg
-            className="h-8 w-8 animate-pulse"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
-        </div>
-        <Skeleton className="h-4 w-32" />
-      </div>
-    </div>
-  );
-}
-
 function Router() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, walletAddress } = useAuth();
 
-  if (isLoading) {
-    return <LoadingScreen />;
-  }
-
-  if (!isAuthenticated) {
+  if (!walletAddress || !isAuthenticated) {
     return (
       <Switch>
         <Route path="/" component={Landing} />

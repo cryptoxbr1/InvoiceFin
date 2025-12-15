@@ -21,14 +21,15 @@ import { db } from "./db";
 import { eq, desc, and, sql } from "drizzle-orm";
 
 export interface IStorage {
-  // User operations (required for Replit Auth)
-  getUser(id: string): Promise<User | undefined>;
+  // User operations (wallet-based)
+  getUser(walletAddress: string): Promise<User | undefined>;
+  getUserById(id: string): Promise<User | undefined>;
   upsertUser(user: UpsertUser): Promise<User>;
-  updateUserWallet(userId: string, walletAddress: string): Promise<User | undefined>;
+  getOrCreateUser(walletAddress: string): Promise<User>;
   
   // Business operations
   getBusiness(id: string): Promise<Business | undefined>;
-  getBusinessByUserId(userId: string): Promise<Business | undefined>;
+  getBusinessByWallet(walletAddress: string): Promise<Business | undefined>;
   createBusiness(business: InsertBusiness): Promise<Business>;
   updateBusiness(id: string, data: Partial<Business>): Promise<Business | undefined>;
   updateBusinessKycStatus(id: string, status: string): Promise<Business | undefined>;
@@ -42,12 +43,13 @@ export interface IStorage {
   // Transaction operations
   getTransaction(id: string): Promise<Transaction | undefined>;
   getTransactionsByBusiness(businessId: string): Promise<Transaction[]>;
+  getTransactionsByWallet(walletAddress: string): Promise<Transaction[]>;
   getTransactionsByInvoice(invoiceId: string): Promise<Transaction[]>;
   createTransaction(transaction: InsertTransaction): Promise<Transaction>;
   updateTransaction(id: string, data: Partial<Transaction>): Promise<Transaction | undefined>;
   
   // Liquidity Pool operations
-  getLiquidityByUser(userId: string): Promise<LiquidityPool[]>;
+  getLiquidityByWallet(walletAddress: string): Promise<LiquidityPool[]>;
   getTotalPoolSize(): Promise<number>;
   createLiquidityDeposit(deposit: InsertLiquidityPool): Promise<LiquidityPool>;
   withdrawLiquidity(id: string): Promise<LiquidityPool | undefined>;
@@ -68,19 +70,30 @@ export interface IStorage {
 
 export class DatabaseStorage implements IStorage {
   // User operations
-  async getUser(id: string): Promise<User | undefined> {
+  async getUser(walletAddress: string): Promise<User | undefined> {
+    const normalizedAddress = walletAddress.toLowerCase();
+    const [user] = await db.select().from(users).where(eq(users.walletAddress, normalizedAddress));
+    return user;
+  }
+
+  async getUserById(id: string): Promise<User | undefined> {
     const [user] = await db.select().from(users).where(eq(users.id, id));
     return user;
   }
 
   async upsertUser(userData: UpsertUser): Promise<User> {
+    const normalizedData = {
+      ...userData,
+      walletAddress: userData.walletAddress.toLowerCase(),
+    };
+    
     const [user] = await db
       .insert(users)
-      .values(userData)
+      .values(normalizedData)
       .onConflictDoUpdate({
-        target: users.id,
+        target: users.walletAddress,
         set: {
-          ...userData,
+          ...normalizedData,
           updatedAt: new Date(),
         },
       })
@@ -88,12 +101,14 @@ export class DatabaseStorage implements IStorage {
     return user;
   }
 
-  async updateUserWallet(userId: string, walletAddress: string): Promise<User | undefined> {
-    const [user] = await db
-      .update(users)
-      .set({ walletAddress, updatedAt: new Date() })
-      .where(eq(users.id, userId))
-      .returning();
+  async getOrCreateUser(walletAddress: string): Promise<User> {
+    const normalizedAddress = walletAddress.toLowerCase();
+    let user = await this.getUser(normalizedAddress);
+    
+    if (!user) {
+      user = await this.upsertUser({ walletAddress: normalizedAddress });
+    }
+    
     return user;
   }
 
@@ -103,13 +118,18 @@ export class DatabaseStorage implements IStorage {
     return business;
   }
 
-  async getBusinessByUserId(userId: string): Promise<Business | undefined> {
-    const [business] = await db.select().from(businesses).where(eq(businesses.userId, userId));
+  async getBusinessByWallet(walletAddress: string): Promise<Business | undefined> {
+    const normalizedAddress = walletAddress.toLowerCase();
+    const [business] = await db.select().from(businesses).where(eq(businesses.walletAddress, normalizedAddress));
     return business;
   }
 
   async createBusiness(business: InsertBusiness): Promise<Business> {
-    const [newBusiness] = await db.insert(businesses).values(business).returning();
+    const normalizedBusiness = {
+      ...business,
+      walletAddress: business.walletAddress.toLowerCase(),
+    };
+    const [newBusiness] = await db.insert(businesses).values(normalizedBusiness).returning();
     return newBusiness;
   }
 
@@ -177,6 +197,15 @@ export class DatabaseStorage implements IStorage {
       .orderBy(desc(transactions.createdAt));
   }
 
+  async getTransactionsByWallet(walletAddress: string): Promise<Transaction[]> {
+    const normalizedAddress = walletAddress.toLowerCase();
+    return db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.walletAddress, normalizedAddress))
+      .orderBy(desc(transactions.createdAt));
+  }
+
   async getTransactionsByInvoice(invoiceId: string): Promise<Transaction[]> {
     return db
       .select()
@@ -200,11 +229,12 @@ export class DatabaseStorage implements IStorage {
   }
 
   // Liquidity Pool operations
-  async getLiquidityByUser(userId: string): Promise<LiquidityPool[]> {
+  async getLiquidityByWallet(walletAddress: string): Promise<LiquidityPool[]> {
+    const normalizedAddress = walletAddress.toLowerCase();
     return db
       .select()
       .from(liquidityPool)
-      .where(eq(liquidityPool.userId, userId))
+      .where(eq(liquidityPool.walletAddress, normalizedAddress))
       .orderBy(desc(liquidityPool.depositedAt));
   }
 
@@ -217,7 +247,11 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createLiquidityDeposit(deposit: InsertLiquidityPool): Promise<LiquidityPool> {
-    const [newDeposit] = await db.insert(liquidityPool).values(deposit).returning();
+    const normalizedDeposit = {
+      ...deposit,
+      walletAddress: deposit.walletAddress.toLowerCase(),
+    };
+    const [newDeposit] = await db.insert(liquidityPool).values(normalizedDeposit).returning();
     return newDeposit;
   }
 

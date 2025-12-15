@@ -14,25 +14,14 @@ import {
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-// Session storage table for Replit Auth
-export const sessions = pgTable(
-  "sessions",
-  {
-    sid: varchar("sid").primaryKey(),
-    sess: jsonb("sess").notNull(),
-    expire: timestamp("expire").notNull(),
-  },
-  (table) => [index("IDX_session_expire").on(table.expire)]
-);
-
-// Users table for Replit Auth
+// Users table - wallet address is the primary identifier
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  email: varchar("email").unique(),
+  walletAddress: varchar("wallet_address").unique().notNull(),
+  email: varchar("email"),
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
-  walletAddress: varchar("wallet_address"),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });
@@ -40,7 +29,7 @@ export const users = pgTable("users", {
 // Business registration and KYC
 export const businesses = pgTable("businesses", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id),
+  walletAddress: varchar("wallet_address").notNull(),
   companyName: varchar("company_name").notNull(),
   taxId: varchar("tax_id").notNull(),
   registrationNumber: varchar("registration_number"),
@@ -69,6 +58,7 @@ export const invoices = pgTable("invoices", {
   buyerName: varchar("buyer_name").notNull(),
   buyerEmail: varchar("buyer_email"),
   buyerAddress: text("buyer_address"),
+  buyerWalletAddress: varchar("buyer_wallet_address"),
   amount: decimal("amount", { precision: 18, scale: 2 }).notNull(),
   currency: varchar("currency").default("USD"),
   issueDate: timestamp("issue_date").notNull(),
@@ -84,6 +74,7 @@ export const invoices = pgTable("invoices", {
   financedAt: timestamp("financed_at"),
   repaidAt: timestamp("repaid_at"),
   blockchainTxHash: varchar("blockchain_tx_hash"),
+  blockchainInvoiceId: varchar("blockchain_invoice_id"),
   blockchainConfirmations: integer("blockchain_confirmations").default(0),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
@@ -94,6 +85,7 @@ export const transactions = pgTable("transactions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   invoiceId: varchar("invoice_id").references(() => invoices.id),
   businessId: varchar("business_id").references(() => businesses.id),
+  walletAddress: varchar("wallet_address"),
   type: varchar("type").notNull(), // finance, repay, withdraw, deposit
   amount: decimal("amount", { precision: 18, scale: 8 }).notNull(),
   currency: varchar("currency").default("MATIC"),
@@ -112,7 +104,7 @@ export const transactions = pgTable("transactions", {
 // Liquidity Pool
 export const liquidityPool = pgTable("liquidity_pool", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id),
+  walletAddress: varchar("wallet_address").notNull(),
   amount: decimal("amount", { precision: 18, scale: 8 }).notNull(),
   currency: varchar("currency").default("MATIC"),
   depositTxHash: varchar("deposit_tx_hash"),
@@ -136,15 +128,10 @@ export const exchangeRates = pgTable("exchange_rates", {
 
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
-  businesses: many(businesses),
   liquidityDeposits: many(liquidityPool),
 }));
 
-export const businessesRelations = relations(businesses, ({ one, many }) => ({
-  user: one(users, {
-    fields: [businesses.userId],
-    references: [users.id],
-  }),
+export const businessesRelations = relations(businesses, ({ many }) => ({
   invoices: many(invoices),
   transactions: many(transactions),
 }));
@@ -170,8 +157,8 @@ export const transactionsRelations = relations(transactions, ({ one }) => ({
 
 export const liquidityPoolRelations = relations(liquidityPool, ({ one }) => ({
   user: one(users, {
-    fields: [liquidityPool.userId],
-    references: [users.id],
+    fields: [liquidityPool.walletAddress],
+    references: [users.walletAddress],
   }),
 }));
 
@@ -203,6 +190,7 @@ export const insertInvoiceSchema = createInsertSchema(invoices).omit({
   financedAt: true,
   repaidAt: true,
   blockchainTxHash: true,
+  blockchainInvoiceId: true,
   blockchainConfirmations: true,
 });
 

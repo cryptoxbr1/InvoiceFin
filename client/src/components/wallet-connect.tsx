@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Wallet, ExternalLink, Copy, LogOut, CheckCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/useAuth";
 
 declare global {
   interface Window {
@@ -21,7 +21,7 @@ declare global {
 const POLYGON_CHAIN_ID = "0x89"; // 137 in hex
 
 export function WalletConnect() {
-  const [address, setAddress] = useState<string | null>(null);
+  const { walletAddress, setWalletAddress, disconnect } = useAuth();
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPolygon, setIsPolygon] = useState(false);
   const { toast } = useToast();
@@ -41,11 +41,10 @@ export function WalletConnect() {
   }, []);
 
   const checkConnection = async () => {
-    if (window.ethereum) {
+    if (window.ethereum && walletAddress) {
       try {
         const accounts = await window.ethereum.request({ method: "eth_accounts" });
         if (accounts.length > 0) {
-          setAddress(accounts[0]);
           checkNetwork();
         }
       } catch (error) {
@@ -63,9 +62,9 @@ export function WalletConnect() {
 
   const handleAccountsChanged = (accounts: string[]) => {
     if (accounts.length === 0) {
-      setAddress(null);
+      disconnect();
     } else {
-      setAddress(accounts[0]);
+      setWalletAddress(accounts[0].toLowerCase());
     }
   };
 
@@ -88,21 +87,29 @@ export function WalletConnect() {
       const accounts = await window.ethereum.request({
         method: "eth_requestAccounts",
       });
-      setAddress(accounts[0]);
-      
-      // Save to backend
-      await apiRequest("POST", "/api/auth/wallet", { walletAddress: accounts[0] });
-      
-      // Switch to Polygon if needed
-      await switchToPolygon();
-      
-      toast({
-        title: "Wallet connected",
-        description: "Successfully connected to your wallet",
-      });
+
+      if (accounts.length > 0) {
+        const address = accounts[0].toLowerCase();
+        
+        const response = await fetch("/api/auth/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ walletAddress: address }),
+        });
+
+        if (response.ok) {
+          setWalletAddress(address);
+          await checkNetwork();
+          
+          toast({
+            title: "Wallet Connected",
+            description: `Connected to ${address.slice(0, 6)}...${address.slice(-4)}`,
+          });
+        }
+      }
     } catch (error: any) {
       toast({
-        title: "Connection failed",
+        title: "Connection Failed",
         description: error.message || "Failed to connect wallet",
         variant: "destructive",
       });
@@ -148,16 +155,16 @@ export function WalletConnect() {
   };
 
   const disconnectWallet = () => {
-    setAddress(null);
+    disconnect();
     toast({
-      title: "Wallet disconnected",
+      title: "Wallet Disconnected",
       description: "Your wallet has been disconnected",
     });
   };
 
   const copyAddress = () => {
-    if (address) {
-      navigator.clipboard.writeText(address);
+    if (walletAddress) {
+      navigator.clipboard.writeText(walletAddress);
       toast({
         title: "Address copied",
         description: "Wallet address copied to clipboard",
@@ -169,7 +176,7 @@ export function WalletConnect() {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   };
 
-  if (!address) {
+  if (!walletAddress) {
     return (
       <Button
         onClick={connectWallet}
@@ -197,7 +204,7 @@ export function WalletConnect() {
                 Wrong Network
               </Badge>
             )}
-            <span className="font-mono text-sm">{truncateAddress(address)}</span>
+            <span className="font-mono text-sm">{truncateAddress(walletAddress)}</span>
           </div>
         </Button>
       </DropdownMenuTrigger>
@@ -208,7 +215,7 @@ export function WalletConnect() {
         </DropdownMenuItem>
         <DropdownMenuItem asChild>
           <a
-            href={`https://polygonscan.com/address/${address}`}
+            href={`https://polygonscan.com/address/${walletAddress}`}
             target="_blank"
             rel="noopener noreferrer"
             data-testid="link-view-explorer"
